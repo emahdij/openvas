@@ -60,12 +60,21 @@ class gvm_api:
             }))
         return out
 
-    def newscan(self, target, scanconfig):
+    def newscan(self, target, scanconfig, ssh_credential=None, snmp_credential=None, smb_credential=None,
+                esxi_credential=None):
         # for more information about scan config click here: https://docs.greenbone.net/GSM-Manual/gos-3.1/en/scanning.html
-        target_id = self._create_target(target)
+        # up credential id ==ssh,smb,esxi
+        # usd credential id == ssh
+        # snmp credential ==ssh
+        target_id = self._create_target(target=target,
+                                        ssh_credential=ssh_credential,
+                                        snmp_credential=snmp_credential,
+                                        smb_credential=smb_credential,
+                                        esxi_credential=esxi_credential,
+                                        )
         task_id = self._create_task(target, target_id, scanconfig, scan_config_id.get('scanner_id'))
         report_id = self._start_task(task_id)
-        return report_id
+        return task_id + '\n' + report_id
 
     def removeData(self):
         tasks = self._gmp.get_tasks(
@@ -76,27 +85,111 @@ class gvm_api:
         if tasks_dict['get_tasks_response']['task_count']['#text'] != '1':
             for taid in range(int(tasks_dict['get_tasks_response']['task_count']['#text'])):
                 print(self._gmp.delete_task(tasks_dict['get_tasks_response']['task'][taid]['@id']))
-        else:print(self._gmp.delete_task(tasks_dict['get_tasks_response']['task']['@id']))
+        else:
+            print(self._gmp.delete_task(tasks_dict['get_tasks_response']['task']['@id']))
         targets = self._gmp.get_targets(filter="rows=-1 not _owner=&quot;&quot;")
         target_dict = xmltodict.parse(targets)
-        if  target_dict['get_targets_response']['target_count']['#text'] != '1':
+        if target_dict['get_targets_response']['target_count']['#text'] != '1':
             for taid in range(int(target_dict['get_targets_response']['target_count']['#text'])):
                 print(self._gmp.delete_target(target_dict['get_targets_response']['target'][taid]['@id']))
-        else: print(self._gmp.delete_target(target_dict['get_targets_response']['target']['@id']))
+        else:
+            print(self._gmp.delete_target(target_dict['get_targets_response']['target']['@id']))
 
         credentials = self._gmp.get_credentials(filter="rows=-1 not _owner=&quot;&quot;")
         credentials_dict = xmltodict.parse(credentials)
         if credentials_dict['get_credentials_response']['credential_count']['#text'] != '1':
-            for cid in range (int(credentials_dict['get_credentials_response']['credential_count']['#text'])):
-                print(self._gmp.delete_credential(credentials_dict['get_credentials_response']['credential'][cid]['@id']))
-        else:print(self._gmp.delete_credential(credentials_dict['get_credentials_response']['credential']['@id']))
+            for cid in range(int(credentials_dict['get_credentials_response']['credential_count']['#text'])):
+                print(
+                    self._gmp.delete_credential(credentials_dict['get_credentials_response']['credential'][cid]['@id']))
+        else:
+            print(self._gmp.delete_credential(credentials_dict['get_credentials_response']['credential']['@id']))
         status_text = self._gmp.empty_trashcan()
         return 'Done'
 
-    def _create_target(self, target):
+    def task_status(self, task_id):
+        respose = self._gmp.get_task(task_id)
+        tasks_dict = xmltodict.parse(respose)
+        return tasks_dict['get_tasks_response']['task']['status']  # Running,Done,Stop Requested
+
+    def create_up_credential(self, name, username, password):
+        # create user name + password credential
+        response = self._gmp.create_credential(credential_type='up',
+                                               name=name,
+                                               login=username,
+                                               password=password)
+        id_xml = xmltodict.parse(response)
+        if id_xml['create_credential_response']['@status_text'] == 'Credential exists already':
+            return 'Credential exists already'
+        else:
+            return id_xml['create_credential_response']['@id']
+
+    def create_usk_credential(self, name, username, passphrase, private_key):
+        # create username + ssh key ,The private key should read the file and send the string
+        response = self._gmp.create_credential(
+            credential_type='usk',
+            name=name,
+            login=username,
+            key_phrase=passphrase,
+            private_key=private_key,
+        )
+
+        id_xml = xmltodict.parse(response)
+        status_text = id_xml['create_credential_response']['@status_text']
+        if status_text == 'Credential exists already':
+            return 'Credential exists already'
+        elif status_text == 'Erroneous private key or associated passphrase':
+            return 'private key is not valid'
+        else:
+            return id_xml['create_credential_response']['@id']
+
+    def create_cc_credential(self, name, certificate, private_key):
+        # Client Certificates ,The private key and certificate should read the file and send the string
+        response = self._gmp.create_credential(
+            credential_type='cc',
+            name=name,
+            certificate=certificate,
+            private_key=private_key,
+        )
+        id_xml = xmltodict.parse(response)
+        status_text = id_xml['create_credential_response']['@status_text']
+        if status_text == 'Credential exists already':
+            return 'Credential exists already'
+        elif status_text == 'Erroneous private key or associated passphrase':
+            return 'private key is not valid'
+        else:
+            return id_xml['create_credential_response']['@id']
+
+    def create_snmp_credential(self, name, community, auth_algorithm, username=None, paseeword=None,
+                               privacy_algorithm=None, privacy_password=None):
+        # auth_algorithm ='md5' or 'sha1'
+        # privacy_algorithm  aes or des or none
+        response = self._gmp.create_credential(
+            credential_type='snmp',
+            name=name,
+            login=username,
+            password=paseeword,
+            community=community,
+            auth_algorithm=auth_algorithm,
+            privacy_algorithm=privacy_algorithm,
+            privacy_password=privacy_password
+
+        )
+        id_xml = xmltodict.parse(response)
+        if id_xml['create_credential_response']['@status_text'] == 'Credential exists already':
+            return 'Credential exists already'
+        else:
+            return id_xml['create_credential_response']['@id']
+
+    def _create_target(self, target, ssh_credential, snmp_credential, smb_credential, esxi_credential):
         # create a unique name by adding the current datetime
         name = "Suspect Host {} {}".format(target, str(datetime.datetime.now()))
-        response = self._gmp.create_target(name=name, hosts=[target])
+        response = self._gmp.create_target(name=name,
+                                           hosts=[target],
+                                           # ssh_port=ssh_port,
+                                           ssh_credential_id=ssh_credential,
+                                           snmp_credential_id=snmp_credential,
+                                           smb_credential_id=smb_credential,
+                                           esxi_credential_id=esxi_credential)
         id_xml = xmltodict.parse(response)
         return id_xml['create_target_response']['@id']
 
@@ -110,7 +203,6 @@ class gvm_api:
         )
         task_id_xml = xmltodict.parse(response)
         task_id = task_id_xml['create_task_response']['@id']
-        print(task_id)
         return task_id
 
     def _start_task(self, task_id):
